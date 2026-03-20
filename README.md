@@ -14,9 +14,137 @@ Open [http://localhost:3001](http://localhost:3001) to access the admin dashboar
 
 ---
 
-## Architecture
+## Full-Scale Architecture
+
+The design targets a production-grade platform with PostgreSQL, Redis caching + Pub/Sub, SSE real-time updates, JWT + RBAC auth, and audit logging. The pilot (below) is a simplified subset for demo purposes.
 
 ### System Overview
+
+```mermaid
+graph TB
+    subgraph "Client Applications"
+        SSS[Server-Side SDKs]
+        CSS[Client-Side SDKs]
+    end
+
+    subgraph "Platform"
+        subgraph "Frontend"
+            AD[Admin Dashboard<br/>React + TypeScript]
+        end
+
+        subgraph "Backend"
+            API[Flag Evaluation API<br/>Express + TypeScript]
+            ENG[Flag Evaluation Engine<br/>Pure TypeScript Module]
+            AUTH[Auth Middleware<br/>JWT + RBAC]
+            AUDIT[Audit Logger]
+            SSE_MGR[SSE Manager]
+            ADMIN_API[Admin API<br/>Express Routes]
+            CACHE[Cache Layer<br/>Redis Read-Through]
+        end
+
+        subgraph "Data"
+            REDIS[(Redis<br/>Cache + Pub/Sub)]
+            PG[(PostgreSQL<br/>Source of Truth)]
+        end
+    end
+
+    AD -->|REST| ADMIN_API
+    SSS -->|SSE + REST| API
+    CSS -->|REST| API
+    API --> AUTH
+    API --> CACHE
+    CACHE -->|cache hit| REDIS
+    CACHE -->|cache miss| PG
+    API --> ENG
+    ADMIN_API --> AUTH
+    ADMIN_API --> AUDIT
+    ADMIN_API --> PG
+    ADMIN_API -->|invalidate cache| REDIS
+    ADMIN_API -->|publish change| REDIS
+    AUDIT --> PG
+    REDIS -->|Pub/Sub| SSE_MGR
+    SSE_MGR -->|SSE stream| SSS
+    SSE_MGR -->|SSE stream| CSS
+```
+
+### Flag Evaluation Flow (Full)
+
+```mermaid
+sequenceDiagram
+    participant CA as Client Application
+    participant API as Flag Evaluation API
+    participant AUTH as Auth Middleware
+    participant ENG as Evaluation Engine
+    participant REDIS as Redis Cache
+    participant DB as PostgreSQL
+
+    CA->>API: GET /api/eval/{flagKey} + SDK_Key header + context
+    API->>AUTH: Validate SDK_Key
+    AUTH->>DB: Lookup Environment by SDK_Key
+    AUTH-->>API: Environment + SDK_Type
+    API->>REDIS: Fetch flag config from cache
+    alt Cache Hit
+        REDIS-->>API: Cached flag config
+    else Cache Miss
+        REDIS-->>API: null
+        API->>DB: Fetch flag config for Environment
+        DB-->>API: Flag config
+        API->>REDIS: Write-through: populate cache with TTL
+    end
+    API->>ENG: evaluate(flagConfig, context)
+    ENG-->>API: { value, variationIndex, reason }
+    API-->>CA: 200 JSON response
+```
+
+### Cache Invalidation Flow
+
+```mermaid
+sequenceDiagram
+    participant ADMIN as Admin API
+    participant PG as PostgreSQL
+    participant REDIS as Redis
+    participant API as Flag Evaluation API
+
+    ADMIN->>PG: Write flag change (source of truth)
+    ADMIN->>REDIS: DELETE env:{envId}:flags
+    ADMIN->>REDIS: DELETE env:{envId}:flag:{flagKey}
+    ADMIN->>REDIS: DELETE env:{envId}:flags:client
+    ADMIN->>REDIS: PUBLISH flag_changes:{envId} event
+    Note over REDIS: TTL (5 min) acts as safety net<br/>in case invalidation is lost
+    API->>REDIS: GET env:{envId}:flag:{flagKey}
+    alt Cache Miss (after invalidation)
+        REDIS-->>API: null
+        API->>PG: Fetch fresh flag config
+        PG-->>API: Flag config
+        API->>REDIS: SET with TTL
+    end
+```
+
+### Data Model
+
+```mermaid
+erDiagram
+    Project ||--o{ Environment : contains
+    Project ||--o{ FeatureFlag : contains
+    Project ||--o{ Segment : contains
+    Project ||--o{ ProjectMember : has
+    Environment ||--|| SDKKey : "has server key"
+    Environment ||--|| ClientSDKKey : "has client key"
+    FeatureFlag ||--o{ TargetingRule : has
+    FeatureFlag ||--o{ FlagEnvironmentConfig : "configured per"
+    Environment ||--o{ FlagEnvironmentConfig : "configures"
+    TargetingRule ||--o{ Condition : has
+    Segment ||--o{ Condition : "defined by"
+    AuditEntry }o--|| Project : "belongs to"
+```
+
+---
+
+## Pilot Architecture
+
+The pilot strips away Redis, SSE, RBAC, audit logging, and PostgreSQL. It uses SQLite, hardcoded API keys, and runs as a single process.
+
+### Pilot System Overview
 
 ```mermaid
 graph TB
@@ -52,7 +180,7 @@ graph TB
     ADMIN_API --> DB
 ```
 
-### Flag Evaluation Flow
+### Pilot Evaluation Flow
 
 ```mermaid
 sequenceDiagram
@@ -73,7 +201,7 @@ sequenceDiagram
     API-->>CA: 200 JSON response
 ```
 
-### Data Model
+### Pilot Data Model
 
 ```mermaid
 erDiagram
