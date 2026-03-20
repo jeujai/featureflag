@@ -12,6 +12,86 @@ npm start
 
 Open [http://localhost:3001](http://localhost:3001) to access the admin dashboard.
 
+---
+
+## Architecture
+
+### System Overview
+
+```mermaid
+graph TB
+    subgraph "Client Applications"
+        SSS[Server-Side SDKs]
+        CSS[Client-Side SDKs]
+    end
+
+    subgraph "Platform"
+        subgraph "Frontend"
+            AD[Admin Dashboard<br/>React + TypeScript + Tailwind]
+        end
+
+        subgraph "Backend"
+            ADMIN_API[Admin API<br/>Express Routes]
+            API[Flag Evaluation API<br/>Express + TypeScript]
+            ENG[Flag Evaluation Engine<br/>Pure TypeScript Module]
+            AUTH[Auth Middleware<br/>API Key + SDK Key]
+        end
+
+        subgraph "Data"
+            DB[(SQLite<br/>Source of Truth)]
+        end
+    end
+
+    AD -->|REST| ADMIN_API
+    SSS -->|REST| API
+    CSS -->|REST| API
+    API --> AUTH
+    API --> DB
+    API --> ENG
+    ADMIN_API --> AUTH
+    ADMIN_API --> DB
+```
+
+### Flag Evaluation Flow
+
+```mermaid
+sequenceDiagram
+    participant CA as Client Application
+    participant API as Flag Evaluation API
+    participant AUTH as Auth Middleware
+    participant DB as SQLite
+    participant ENG as Evaluation Engine
+
+    CA->>API: POST /api/eval/{flagKey} + Bearer SDK_Key + context
+    API->>AUTH: Validate SDK_Key
+    AUTH->>DB: Lookup Environment by SDK_Key
+    AUTH-->>API: Environment context
+    API->>DB: Fetch flag config + segments
+    DB-->>API: Flag config & segments
+    API->>ENG: evaluate(flagConfig, context, segments)
+    ENG-->>API: { value, variationIndex, reason }
+    API-->>CA: 200 JSON response
+```
+
+### Data Model
+
+```mermaid
+erDiagram
+    Project ||--o{ Environment : contains
+    Project ||--o{ FeatureFlag : contains
+    Project ||--o{ Segment : contains
+    Environment ||--|| SDKKey : "has server key"
+    Environment ||--|| ClientSDKKey : "has client key"
+    FeatureFlag ||--o{ FlagEnvironmentConfig : "configured per"
+    Environment ||--o{ FlagEnvironmentConfig : "configures"
+    FlagEnvironmentConfig ||--o{ TargetingRule : has
+    TargetingRule ||--o{ Clause : has
+    Segment ||--o{ SegmentRule : "defined by"
+    SegmentRule ||--o{ Clause : has
+```
+
+---
+
 ## Admin Dashboard
 
 The dashboard is the main interface for managing flags, environments, and segments.
